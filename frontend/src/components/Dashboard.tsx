@@ -29,21 +29,58 @@ const Dashboard: React.FC<DashboardProps> = ({ user, scans, onScanClick, onScanU
     return 'text-green-600 bg-green-100';
   };
 
+  const formatLocalTime = (timestamp: string) => {
+    try {
+      const date = new Date(timestamp + (timestamp.endsWith('Z') ? '' : 'Z'));
+      if (isNaN(date.getTime())) {
+        return timestamp;
+      }
+      return date.toLocaleString();
+    } catch (error) {
+      return timestamp;
+    }
+  };
+
   const formatDuration = (startTime: string, endTime?: string) => {
-    const start = new Date(startTime);
-    const end = endTime ? new Date(endTime) : new Date();
-    const durationMs = end.getTime() - start.getTime();
-    
-    const seconds = Math.floor(durationMs / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds % 60}s`;
-    } else {
-      return `${seconds}s`;
+    try {
+      // Parse the ISO string properly, treating server time as UTC
+      const start = new Date(startTime + (startTime.endsWith('Z') ? '' : 'Z'));
+      const end = endTime ? new Date(endTime + (endTime.endsWith('Z') ? '' : 'Z')) : new Date();
+      
+      // Validate that dates are valid
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return '0s';
+      }
+      
+      const durationMs = end.getTime() - start.getTime();
+      
+      // Handle negative durations (shouldn't happen, but just in case)
+      if (durationMs < 0) {
+        return '0s';
+      }
+      
+      const totalSeconds = Math.floor(durationMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      // Format as HH:MM:SS for running scans, or shorter format for completed
+      if (endTime) {
+        // For completed scans, use shorter format
+        if (hours > 0) {
+          return `${hours}h ${minutes}m ${seconds}s`;
+        } else if (minutes > 0) {
+          return `${minutes}m ${seconds}s`;
+        } else {
+          return `${seconds}s`;
+        }
+      } else {
+        // For running scans, use MM:SS format that increments
+        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      }
+    } catch (error) {
+      console.error('Error formatting duration:', error);
+      return '0s';
     }
   };
 
@@ -155,8 +192,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, scans, onScanClick, onScanU
                     <div>
                       <h4 className="font-medium text-gray-900 hover:text-primary-600">{scan.domain}</h4>
                       <p className="text-sm text-gray-500">
-                        {new Date(scan.created_at).toLocaleDateString()} at{' '}
-                        {new Date(scan.created_at).toLocaleTimeString()}
+                        {formatLocalTime(scan.created_at)}
                         {scan.status === 'completed' && scan.completed_at && (
                           <span className="ml-2 text-gray-400">
                             • {formatDuration(scan.created_at, scan.completed_at)}

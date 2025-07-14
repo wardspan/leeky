@@ -74,21 +74,52 @@ const ScanResults: React.FC<ScanResultsProps> = ({ scans }) => {
     navigator.clipboard.writeText(text);
   };
 
+  const formatLocalTime = (timestamp: string) => {
+    try {
+      const date = new Date(timestamp + (timestamp.endsWith('Z') ? '' : 'Z'));
+      if (isNaN(date.getTime())) {
+        return timestamp;
+      }
+      return date.toLocaleString();
+    } catch (error) {
+      return timestamp;
+    }
+  };
+
   const formatDuration = (startTime: string, endTime?: string) => {
-    const start = new Date(startTime);
-    const end = endTime ? new Date(endTime) : new Date();
-    const durationMs = end.getTime() - start.getTime();
-    
-    const seconds = Math.floor(durationMs / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds % 60}s`;
-    } else {
-      return `${seconds}s`;
+    try {
+      // Parse the ISO string properly, treating server time as UTC
+      const start = new Date(startTime + (startTime.endsWith('Z') ? '' : 'Z'));
+      const end = endTime ? new Date(endTime + (endTime.endsWith('Z') ? '' : 'Z')) : new Date();
+      
+      // Validate that dates are valid
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return '0s';
+      }
+      
+      const durationMs = end.getTime() - start.getTime();
+      
+      // Handle negative durations (shouldn't happen, but just in case)
+      if (durationMs < 0) {
+        return '0s';
+      }
+      
+      const totalSeconds = Math.floor(durationMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      // For completed scans, use shorter format
+      if (hours > 0) {
+        return `${hours}h ${minutes}m ${seconds}s`;
+      } else if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+      } else {
+        return `${seconds}s`;
+      }
+    } catch (error) {
+      console.error('Error formatting duration:', error);
+      return '0s';
     }
   };
 
@@ -146,7 +177,7 @@ const ScanResults: React.FC<ScanResultsProps> = ({ scans }) => {
               </div>
             </div>
             <div className="text-sm text-gray-600">
-              <p>Completed: {new Date(selectedScan.completed_at!).toLocaleString()}</p>
+              <p>Completed: {formatLocalTime(selectedScan.completed_at!)}</p>
               <p>Duration: {formatDuration(selectedScan.created_at, selectedScan.completed_at)}</p>
               <p>Total Findings: {results.length} (Database count: {selectedScan.findings_count})</p>
             </div>

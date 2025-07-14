@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 
 from .database import get_db
-from .models import User
+from .models import User, PasswordResetToken
 from .schemas import UserCreate, TokenData
 
 load_dotenv()
@@ -82,3 +82,62 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+def get_user_by_email(db: Session, email: str):
+    return db.query(User).filter(User.email == email).first()
+
+def create_password_reset_token(db: Session, user_id: int):
+    import secrets
+    
+    # Generate a secure random token
+    token = secrets.token_urlsafe(32)
+    
+    # Token expires in 1 hour
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+    
+    # Invalidate any existing tokens for this user
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user_id,
+        PasswordResetToken.is_used == False
+    ).update({"is_used": True})
+    
+    # Create new token
+    reset_token = PasswordResetToken(
+        user_id=user_id,
+        token=token,
+        expires_at=expires_at
+    )
+    db.add(reset_token)
+    db.commit()
+    
+    return token
+
+def verify_password_reset_token(db: Session, token: str):
+    reset_token = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token == token,
+        PasswordResetToken.is_used == False,
+        PasswordResetToken.expires_at > datetime.utcnow()
+    ).first()
+    
+    if not reset_token:
+        return None
+    
+    return reset_token
+
+def reset_password(db: Session, token: str, new_password: str):
+    reset_token = verify_password_reset_token(db, token)
+    if not reset_token:
+        return False
+    
+    # Update user's password
+    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    if not user:
+        return False
+    
+    user.hashed_password = get_password_hash(new_password)
+    
+    # Mark token as used
+    reset_token.is_used = True
+    
+    db.commit()
+    return True

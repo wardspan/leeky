@@ -1,15 +1,86 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.orm import Session
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import List
 
 from .database import get_db
 from .models import User, Scan, UserCredentials
-from .schemas import ScanCreate, ScanResponse, UserCreate, UserResponse, ScanResultResponse, Token
-from .auth import get_current_user, create_user, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from .schemas import ScanCreate, ScanResponse, UserCreate, UserResponse, ScanResultResponse, Token, PasswordResetRequest, PasswordResetConfirm
+from .auth import get_current_user, create_user, authenticate_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_user_by_email, create_password_reset_token, reset_password
 from .crud import create_scan, get_user_scans, get_scan_results
+from .services.github_search import execute_github_dorks
 
 router = APIRouter()
+
+def simulate_scan_completion(db: Session, scan: Scan):
+    """Execute real GitHub scan and update scan results"""
+    from .models import ScanResult
+    import base64
+    
+    try:
+        # Update scan status to running
+        scan.status = "running"
+        db.commit()
+        
+        # Get user's GitHub token
+        github_cred = db.query(UserCredentials).filter(
+            UserCredentials.user_id == scan.user_id,
+            UserCredentials.service == "github",
+            UserCredentials.is_active == True
+        ).first()
+        
+        if not github_cred:
+            print("No GitHub credentials found - using simulated scan")
+            scan.status = "completed"
+            scan.completed_at = datetime.utcnow()
+            scan.findings_count = 0
+            scan.risk_score = 0.0
+            db.commit()
+            return scan
+        
+        # Decrypt GitHub token
+        github_token = base64.b64decode(github_cred.encrypted_token.encode()).decode()
+        print(f"Using user's GitHub token for scan")
+        
+        # Execute GitHub search
+        print(f"Starting real GitHub scan for domain: {scan.domain}")
+        results = execute_github_dorks(github_token, scan.domain)
+        
+        # Store results in database
+        max_risk = 0.0
+        for result in results:
+            scan_result = ScanResult(
+                scan_id=scan.id,
+                repository=result["repository"],
+                file_path=result["file_path"],
+                finding=result["finding"],
+                risk_score=result["risk_score"],
+                classification=result["classification"],
+                github_url=result.get("github_url"),
+                raw_content=result.get("raw_content")
+            )
+            db.add(scan_result)
+            max_risk = max(max_risk, result["risk_score"])
+        
+        # Update scan with results
+        scan.status = "completed"
+        scan.completed_at = datetime.utcnow()
+        scan.findings_count = len(results)
+        scan.risk_score = max_risk
+        
+        db.commit()
+        
+        print(f"Found {len(results)} GitHub results")
+        print(f"Scan completed: {len(results)} findings, max risk: {max_risk}")
+        
+        return scan
+        
+    except Exception as e:
+        print(f"Error in scan completion: {str(e)}")
+        scan.status = "failed"
+        scan.completed_at = datetime.utcnow()
+        db.commit()
+        return scan
 
 # Auth endpoints
 @router.post("/auth/register", response_model=UserResponse)
@@ -45,6 +116,36 @@ def login(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/auth/password-reset-request")
+def request_password_reset(request: PasswordResetRequest, db: Session = Depends(get_db)):
+    """Request a password reset token"""
+    user = get_user_by_email(db, request.email)
+    if not user:
+        # Don't reveal whether email exists or not for security
+        return {"message": "If the email exists, a password reset link has been sent"}
+    
+    # Generate reset token
+    reset_token = create_password_reset_token(db, user.id)
+    
+    # In a real application, you would send this token via email
+    # For now, we'll just return it (not recommended for production)
+    print(f"Password reset token for {request.email}: {reset_token}")
+    
+    return {"message": "If the email exists, a password reset link has been sent", "token": reset_token}
+
+@router.post("/auth/password-reset-confirm")
+def confirm_password_reset(request: PasswordResetConfirm, db: Session = Depends(get_db)):
+    """Reset password using a valid token"""
+    success = reset_password(db, request.token, request.new_password)
+    
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token"
+        )
+    
+    return {"message": "Password has been reset successfully"}
 
 # User endpoints
 @router.get("/users/me", response_model=UserResponse)
